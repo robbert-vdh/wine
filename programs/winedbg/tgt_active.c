@@ -766,6 +766,116 @@ static void output_system_info(void)
     }
 }
 
+/***********************************************************************
+ *           build_command_line
+ *
+ * Build the command line of a process from the argv array.
+ * Copied from winevdm, which in turn adapted it from ENV_BuildCommandLine. The difference between
+ * this and the winevdm version is the command line is not prefixed with its length.
+ */
+static char *build_command_line(char **argv)
+{
+    int len;
+    char *p, **arg, *cmd_line;
+
+    len = 0;
+    for (arg = argv; *arg; arg++)
+    {
+        BOOL has_space;
+        int bcount;
+        char* a;
+
+        has_space=FALSE;
+        bcount=0;
+        a=*arg;
+        if( !*a ) has_space=TRUE;
+        while (*a!='\0') {
+            if (*a=='\\') {
+                bcount++;
+            } else {
+                if (*a==' ' || *a=='\t') {
+                    has_space=TRUE;
+                } else if (*a=='"') {
+                    /* doubling of '\' preceding a '"',
+                     * plus escaping of said '"'
+                     */
+                    len+=2*bcount+1;
+                }
+                bcount=0;
+            }
+            a++;
+        }
+        len+=(a-*arg)+1 /* for the separating space */;
+        if (has_space)
+            len+=2; /* for the quotes */
+    }
+
+    if (!(cmd_line = HeapAlloc( GetProcessHeap(), 0, len ? len : 1 )))
+        return NULL;
+
+    p = cmd_line;
+    for (arg = argv; *arg; arg++)
+    {
+        BOOL has_space,has_quote;
+        char* a;
+
+        /* Check for quotes and spaces in this argument */
+        has_space=has_quote=FALSE;
+        a=*arg;
+        if( !*a ) has_space=TRUE;
+        while (*a!='\0') {
+            if (*a==' ' || *a=='\t') {
+                has_space=TRUE;
+                if (has_quote)
+                    break;
+            } else if (*a=='"') {
+                has_quote=TRUE;
+                if (has_space)
+                    break;
+            }
+            a++;
+        }
+
+        /* Now transfer it to the command line */
+        if (has_space)
+            *p++='"';
+        if (has_quote) {
+            int bcount;
+
+            bcount=0;
+            a=*arg;
+            while (*a!='\0') {
+                if (*a=='\\') {
+                    *p++=*a;
+                    bcount++;
+                } else {
+                    if (*a=='"') {
+                        int i;
+
+                        /* Double all the '\\' preceding this '"', plus one */
+                        for (i=0;i<=bcount;i++)
+                            *p++='\\';
+                        *p++='"';
+                    } else {
+                        *p++=*a;
+                    }
+                    bcount=0;
+                }
+                a++;
+            }
+        } else {
+            strcpy(p,*arg);
+            p+=strlen(*arg);
+        }
+        if (has_space)
+            *p++='"';
+        *p++=' ';
+    }
+    if (len) p--;  /* remove last space */
+    *p = '\0';
+    return cmd_line;
+}
+
 /******************************************************************
  *		dbg_active_attach
  *
@@ -807,27 +917,14 @@ enum dbg_start  dbg_active_attach(int argc, char* argv[])
  */
 enum dbg_start    dbg_active_launch(int argc, char* argv[])
 {
-    int         i, len;
     LPSTR	cmd_line;
 
     if (argc == 0) return start_error_parse;
 
-    if (!(cmd_line = HeapAlloc(GetProcessHeap(), 0, len = 1)))
+    if (!(cmd_line = build_command_line(argv)))
     {
-    oom_leave:
         dbg_printf("Out of memory\n");
         return start_error_init;
-    }
-    cmd_line[0] = '\0';
-
-    for (i = 0; i < argc; i++)
-    {
-        len += strlen(argv[i]) + 1;
-        if (!(cmd_line = HeapReAlloc(GetProcessHeap(), 0, cmd_line, len)))
-            goto oom_leave;
-        strcat(cmd_line, argv[i]);
-        cmd_line[len - 2] = ' ';
-        cmd_line[len - 1] = '\0';
     }
 
     if (!dbg_start_debuggee(cmd_line))
